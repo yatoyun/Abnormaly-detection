@@ -1,3 +1,26 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:2a3494175932356061e93763d2d01763131044d1531ce1acba7153404bae6148
-size 529
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import pytest
+
+
+@pytest.fixture()
+def get_canvas(mocker):
+    def get():
+        canvas = mocker.Mock()
+        canvas.point = mocker.Mock()
+        canvas.line = mocker.Mock()
+
+        return canvas
+
+    return get
+
+
+@pytest.fixture()
+def tty(mocker):
+    mocker.patch('plotille._colors._isatty', return_value=True)
+
+
+@pytest.fixture()
+def notty(mocker):
+    mocker.patch('plotille._colors._isatty', return_value=False)

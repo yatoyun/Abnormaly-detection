@@ -1,3 +1,21 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:f84b7de430685500162441c6b650519df620db12913d1d8a20e7f59aa0818bd2
-size 406
+"""Useful utils
+"""
+
+# progress bar
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), "progress"))
+from progress.bar import (
+        Bar, FillingCirclesBar, FillingSquaresBar, ChargingBar,
+        IncrementalBar, PixelBar, ShadyBar)
+
+__all__ = [
+    'Bar',
+    'ChargingBar',
+    'FillingCirclesBar',
+    'FillingSquaresBar',
+    'IncrementalBar',
+    'PixelBar',
+    'ShadyBar',
+]
+
+

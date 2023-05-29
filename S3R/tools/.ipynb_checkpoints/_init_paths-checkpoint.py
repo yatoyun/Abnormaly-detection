@@ -1,3 +1,18 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:a7d66c77cb328d8c56ba0277ffca867aa62fdf764baf5197c3dd553bd6efc8c6
-size 412
+import os
+import sys
+import inspect
+import os.path as osp
+
+def add_path(path):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+this_dir = osp.dirname(__file__)
+
+currentdir = osp.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+parentdir = osp.dirname(currentdir)
+sys.path.insert(0, parentdir)
+
+# # Add lib to PYTHONPATH
+# lib_path = osp.join(this_dir, 'lib')
+# add_path(lib_path)

@@ -1,3 +1,15 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:0490d6b14a8ff06cf3f906acdeffea029d887586b3679132b7f7849ac37eae55
-size 278
+from .rtfm_model import Model
+import torch
+
+def rtfm_model(device, path_trained_model):
+    
+    model = Model(2048, 32)
+    model_ckpt = torch.load(path_trained_model)
+    
+    model.load_state_dict(model_ckpt)
+
+    model = model.to(device)
+
+    model.eval()
+
+    return model

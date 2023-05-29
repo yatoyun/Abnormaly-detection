@@ -1,3 +1,13 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:d2a67a0ead743a56ba8851243cabc6165bb98a3a2c15c8aff454c17d821ad215
-size 333
+
+import torch.nn as nn
+from torch.nn import L1Loss, MSELoss, Sigmoid
+
+class SigmoidMAELoss(nn.Module):
+    def __init__(self):
+        super(SigmoidMAELoss, self).__init__()
+        self.__sigmoid__ = Sigmoid()
+        self.__l1_loss__ = MSELoss()
+
+    def forward(self, pred, target):
+        return self.__l1_loss__(pred, target)
+
