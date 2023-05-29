@@ -130,10 +130,6 @@ def main():
     test_dataset_cfg.dictionary = dictionary
     test_set = Dataset(**test_dataset_cfg)
 
-    # set batch size
-    batch_size_regular = args.batch_size
-    batch_size_anomaly = round(batch_size_regular * (len(train_anomaly_set_model) / len(train_regular_set_model)))
-
     train_regular_loader_m = DataLoader(
         train_regular_set_model,
         batch_size=args.batch_size,
