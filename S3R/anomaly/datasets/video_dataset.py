@@ -14,7 +14,6 @@ from sklearn.preprocessing import normalize, MinMaxScaler, StandardScaler
 import cv2
 
 
-
 def softmax(scores, axis):
     es = np.exp(scores - scores.max(axis=axis)[..., None])
     return es / es.sum(axis=axis)[..., None]
@@ -67,12 +66,12 @@ class Dataset(data.Dataset):
 
         self.transform = transform
         self.test_mode = test_mode
-        
+
         if args != None and args.preprocessed:
             self.preprocessed = True
         else:
             self.preprocessed = False
-            
+
         self._prepare_data(video_list, verbose)
 
         self.num_frame = 0
@@ -114,7 +113,7 @@ class Dataset(data.Dataset):
                 index = 63
             elif "ucf-crime" in self.dataset:
                 if self.preprocessed:
-                    index = 6614 # split = 5830, split-r = 6614 
+                    index = 810  # 6614 # split = 5830, split-r = 6614
                 else:
                     index = 810
 
