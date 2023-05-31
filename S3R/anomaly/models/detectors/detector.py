@@ -287,14 +287,16 @@ class S3R(nn.Module):
         nfea_magnitudes = feat_magnitudes[0 : self.batch_size]  # normal feature magnitudes
         afea_magnitudes = feat_magnitudes[self.batch_size :]  # abnormal feature magnitudes
 
-        n_size = nfea_magnitudes.shape[0]
+        n_size_r = nfea_magnitudes.shape[0]
+        n_size_a = afea_magnitudes.shape[0]
 
         if nfea_magnitudes.shape[0] == 1:  # this is for inference, the batch size is 1
             afea_magnitudes = nfea_magnitudes
             anomaly_scores = regular_scores
             anomaly_videos = regular_videos
+            n_size_a = n_size_r
 
-        select_idx = torch.ones_like(nfea_magnitudes).to(device)
+        select_idx = torch.ones_like(afea_magnitudes).to(device)
         select_idx = self.drop_out(select_idx)
 
         # ========================================================
@@ -304,7 +306,7 @@ class S3R(nn.Module):
         idx_abn = torch.topk(afea_magnitudes_drop, k_anomaly, dim=1)[1]
         idx_abn_feat = idx_abn.unsqueeze(2).expand([-1, -1, anomaly_videos.shape[2]])
 
-        anomaly_videos = anomaly_videos.view(n_size, N, T, C)
+        anomaly_videos = anomaly_videos.view(n_size_a, N, T, C)
         anomaly_videos = anomaly_videos.permute(1, 0, 2, 3)
 
         total_select_abn_feature = torch.zeros(0).to(device)
@@ -329,7 +331,7 @@ class S3R(nn.Module):
         idx_normal = torch.topk(nfea_magnitudes_drop, k_regular, dim=1)[1]
         idx_normal_feat = idx_normal.unsqueeze(2).expand([-1, -1, regular_videos.shape[2]])
 
-        regular_videos = regular_videos.view(n_size, N, T, C)
+        regular_videos = regular_videos.view(n_size_r, N, T, C)
         regular_videos = regular_videos.permute(1, 0, 2, 3)
 
         total_select_nor_feature = torch.zeros(0).to(device)

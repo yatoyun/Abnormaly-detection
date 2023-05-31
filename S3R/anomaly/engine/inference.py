@@ -4,7 +4,7 @@ import numpy as np
 
 from torchmetrics.classification import AUROC
 
-from sklearn.metrics import auc, roc_curve
+from sklearn.metrics import auc, roc_curve, confusion_matrix
 
 
 def inference(dataloader, model, args, device):
@@ -60,4 +60,6 @@ def inference(dataloader, model, args, device):
         rec_auc = auc(fpr, tpr)
         score = rec_auc
 
-        return score
+        cm = confusion_matrix(gt, pred.round())
+
+        return score, cm

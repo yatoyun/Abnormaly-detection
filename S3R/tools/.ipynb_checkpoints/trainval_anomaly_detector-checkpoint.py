@@ -26,7 +26,6 @@ from anomaly.models.detectors.detector import S3R
 from anomaly.models.MGFN.models.mgfn import mgfn
 from anomaly.engine.rtfm_model import Model as RTFM
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
 from anomaly.models.MGFN.train import train as trainer
 import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
@@ -131,9 +130,15 @@ def main():
     test_dataset_cfg.dictionary = dictionary
     test_set = Dataset(**test_dataset_cfg)
 
+    # set batch size
+    args.batch_size = [args.batch_size]
+
+    # args.batch_size.append(round(args.batch_size[0] * (len(train_anomaly_set_model) / len(train_regular_set_model))))
+    args.batch_size.append(args.batch_size[0])
+
     train_regular_loader_m = DataLoader(
         train_regular_set_model,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size[0],
         shuffle=True,
         num_workers=args.workers,
         pin_memory=False,
@@ -151,7 +156,7 @@ def main():
 
     train_anomaly_loader_m = DataLoader(
         train_anomaly_set_model,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size[1],
         shuffle=True,
         num_workers=args.workers,
         pin_memory=False,
@@ -173,23 +178,33 @@ def main():
     print("regular", len(train_regular_set_model), len(train_regular_set_ensemble))
     print("anomaly", len(train_anomaly_set_model), len(train_anomaly_set_ensemble))
     print("test", len(test_set))
+    print("batch_size (regular, anomaly)", args.batch_size[0], args.batch_size[1])
 
     if args.model_name == "mgfn":
-        model = mgfn(batch_size=args.batch_size)
+        model = mgfn(batch_size=args.batch_size[0])
     elif args.model_name == "RF":
         model = RandomForestClassifier(n_estimators=1000, random_state=0, n_jobs=32, verbose=1)
     elif args.model_name == "RTFM":
-        model = RTFM(args.feature_size, args.batch_size)
+        model = RTFM(args.feature_size[0], args.batch_size)
         print(
             """
         load RTFM
         """
         )
     elif args.model_name == "SVM":
-        model = SVC(probability=True, 
-                    verbose=1)
+        if torch.cuda.is_available():
+            from cuml.svm import SVC
+
+            print("cuml.svm.SVC")
+        else:
+            from sklearn.svm import SVC
+
+            print("sklearn.svm.SVC")
+        model = SVC(kernel="rbf", probability=True, verbose=3)
     else:
-        model = S3R(args.feature_size, args.batch_size, args.quantize_size, dropout=args.dropout, modality=cfg.modality)
+        model = S3R(
+            args.feature_size, args.batch_size[0], args.quantize_size, dropout=args.dropout, modality=cfg.modality
+        )
 
     # logger.info(train_regular_set.data_info)
     # logger.info(train_anomaly_set.data_info)
@@ -239,7 +254,7 @@ def main():
             if args.inference:
                 score = inference2(test_loader, train_regular_loader_e, train_anomaly_loader_e, model, args, device)
             elif args.model_name != "RF":
-                score = inference(test_loader, model, args, device)
+                score, cm = inference(test_loader, model, args, device)
 
             # >> Performance
             title = [["Dataset", "Method", "Feature", "AUC (%)"]]
@@ -249,12 +264,17 @@ def main():
             for i in range(len(title[0])):
                 table.justify_columns[i] = "center"
             logger.info("Summary Result on {} metric\n{}".format("AUC", table.table))
+            print(cm)
 
         if args.inference:
             exit()
     else:
         if args.model_name not in ["RF", "SVM"]:
-            score = inference(test_loader, model, args, device)
+            score, cm = inference(test_loader, model, args, device)
+
+    # free Dataset
+    del train_regular_loader_e
+    del train_anomaly_loader_e
 
     if args.model_name not in ["RF", "SVM"]:
         sys_info = """
@@ -336,28 +356,34 @@ def main():
     statistics = []
     if args.debug:
         args.max_epoch = 3
+    print(len(train_regular_loader_m), len(train_anomaly_loader_m))
+    
+    balance = [len(train_regular_set_model),len(train_anomaly_set_model)]
     if args.model_name not in ["RF", "SVM"]:
         for step in range(last_epoch, args.max_epoch + 1):
             if step > 1 and config.lr[step - 1] != config.lr[step - 2]:
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = config.lr[step - 1]
 
-            if (step - 1) % len(train_regular_loader_m) == 0:
-                loadern_iter = iter(train_regular_loader_m)
+            # if (step - 1) % len(train_regular_loader_m) == 0:
+            #     loadern_iter = iter(train_regular_loader_m)
 
-            if (step - 1) % len(train_anomaly_loader_m) == 0:
+            # if (step - 1) % len(train_anomaly_loader_m) == 0:
+            #     loadera_iter = iter(train_anomaly_loader_m)
+            if (step - 1) % min(len(train_regular_loader_m), len(train_anomaly_loader_m)) == 0:
+                loadern_iter = iter(train_regular_loader_m)
                 loadera_iter = iter(train_anomaly_loader_m)
             if args.model_name == "mgfn":
                 loss = trainer(loadern_iter, loadera_iter, model, args.batch_size, optimizer, device)
             else:
-                loss = do_train(loadern_iter, loadera_iter, model, args.batch_size, optimizer, device, args)
+                loss = do_train(loadern_iter, loadera_iter, balance, model, args.batch_size, optimizer, device, args)
 
             condition = (
                 (step % 1 == 0) if args.debug else (step % args.evaluate_freq == 0 and step > args.evaluate_min_step)
             )
 
             if condition:
-                score = inference(test_loader, model, args, device)
+                score, cm = inference(test_loader, model, args, device)
                 test_info["epoch"].append(step)
                 test_info["test_{metric}".format(metric="AUC" if "xd-violence" not in args.dataset else "AP")].append(
                     score
@@ -441,6 +467,10 @@ def main():
     else:
         import pickle
         from tqdm import tqdm
+        import warnings
+        from joblib import dump, load
+
+        warnings.filterwarnings("ignore", category=FutureWarning)
 
         with torch.set_grad_enabled(True):
             # print(len(train_regular_loader_m))
@@ -468,9 +498,19 @@ def main():
                     )
 
         print(f"\nstart {args.model_name}")
+        if torch.cuda.is_available():
+            # import cupy as cp
+
+            # X_train = cp.asarray(X_train, dtype=cp.float32)
+            # y_train = cp.asarray(y_train, dtype=cp.float32)
+            X_train = np.asarray(X_train, dtype=np.float32)
+            y_train = np.asarray(y_train, dtype=np.float32)
+
         filename = checkpoint_filename.format(data=args.dataset, model=args.model_name)
         model.fit(X_train, y_train)
+        print("finish fitting")
         pickle.dump(model, open(args.checkpoint_path.joinpath(args.version).joinpath(filename), "wb"))
+        print("finish dumping")
 
 
 if __name__ == "__main__":

@@ -123,6 +123,9 @@ def main():
     test_dataset_cfg.dictionary = dictionary
     test_set = Dataset(**test_dataset_cfg)
 
+    print("regular", len(train_regular_set))
+    print("anomaly", len(train_anomaly_set))
+
     train_regular_loader = DataLoader(
         train_regular_set,
         batch_size=args.batch_size,
@@ -214,7 +217,7 @@ def main():
                 # score, score1 = inference3(test_loader, model, args, device)
                 score = inference2(test_loader, train_regular_loader, train_anomaly_loader, model, args, device)
             elif args.model_name != "RF":
-                score = inference(test_loader, model, args, device)
+                score, cm = inference(test_loader, model, args, device)
 
             # >> Performance emsemble
             title = [["Dataset", "Method", "Feature", "AUC (%)"]]
@@ -224,6 +227,12 @@ def main():
             for i in range(len(title[0])):
                 table.justify_columns[i] = "center"
             logger.info("Summary Result on {} metric (emsemble)\n{}".format("AUC", table.table))
+            print(cm)
+            import seaborn as sns
+            import matplotlib.pyplot as plt
+
+            sns.heatmap(cm, annot=True, cmap="Blues")
+            plt.savefig("sklearn_confusion_matrix_annot_blues.png")
 
         #             # >> Performance mean
         #             title = [['Dataset', 'Method', 'Feature', 'AUC (%)']]
@@ -238,7 +247,7 @@ def main():
             exit()
     else:
         if args.model_name not in ["RF", "SVM"]:
-            score = inference(test_loader, model, args, device)
+            score, cm = inference(test_loader, model, args, device)
 
     if args.model_name not in ["RF", "SVM"]:
         sys_info = """
@@ -320,6 +329,8 @@ def main():
     statistics = []
     if args.debug:
         args.max_epoch = 3
+    balance = [18911 // 32, 6614 // 32]
+
     if args.model_name not in ["RF", "SVM"]:
         for step in range(last_epoch, args.max_epoch + 1):
             if step > 1 and config.lr[step - 1] != config.lr[step - 2]:
@@ -332,16 +343,18 @@ def main():
             if (step - 1) % len(train_anomaly_loader) == 0:
                 loadera_iter = iter(train_anomaly_loader)
             if args.model_name == "mgfn":
-                loss = trainer(loadern_iter, loadera_iter, model, args.batch_size, optimizer, device)
+                loss = trainer(loadern_iter, loadera_iter, balance, model, args.batch_size, optimizer, device)
             else:
-                loss = do_train(loadern_iter, loadera_iter, model, args.batch_size, optimizer, device, args)
+                loss = do_train(
+                    loadern_iter, loadera_iter, balance, model, [args.batch_size] * 2, optimizer, device, args
+                )
 
             condition = (
                 (step % 1 == 0) if args.debug else (step % args.evaluate_freq == 0 and step > args.evaluate_min_step)
             )
 
             if condition:
-                score = inference(test_loader, model, args, device)
+                score, cm = inference(test_loader, model, args, device)
 
                 test_info["epoch"].append(step)
                 test_info["test_{metric}".format(metric="AUC" if "xd-violence" not in args.dataset else "AP")].append(

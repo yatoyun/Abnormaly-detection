@@ -7,17 +7,35 @@ from torch.nn import L1Loss, MSELoss, Sigmoid
 from anomaly.losses import SigmoidMAELoss, sparsity_loss, smooth_loss
 from .inference2 import RandomFeatureMapDropout
 from .inference2 import AddGaussianNoise
+from sklearn.metrics import confusion_matrix
+
+
+def calculate_h_score(y_true, y_pred):
+    # Confusion matrix
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
+    # False positive rate (FPR)
+    fpr = fp / (fp + tn)
+
+    # False negative rate (FNR)
+    fnr = fn / (fn + tp)
+
+    # Harmonic mean of FPR and FNR
+    h_score = 2 / ((1 / fpr) + (1 / fnr))
+
+    return h_score
 
 
 class RTFM_loss(nn.Module):
-    def __init__(self, alpha, margin):
+    def __init__(self, alpha, margin, weights):
         super(RTFM_loss, self).__init__()
 
         self.alpha = alpha
         self.margin = margin
         self.sigmoid = nn.Sigmoid()
         self.mae_criterion = SigmoidMAELoss()
-        self.criterion = nn.BCELoss()
+        self.criterion = nn.BCELoss(weight=weights)
+        self.weights = weights
 
     def forward(
         self,
@@ -37,36 +55,42 @@ class RTFM_loss(nn.Module):
 
         label = label.cuda()
 
+        # change loss_r and loss_a to mean because of the batch size
         loss_cls = self.criterion(score, label)  # BCE loss in the score space
-
-        loss_anomaly = torch.abs(self.margin - torch.norm(torch.mean(anomaly_crest, dim=1), p=2, dim=1))  # Txn
         loss_regular = torch.norm(torch.mean(regular_crest, dim=1), p=2, dim=1)  # Txn
-        loss = torch.mean((loss_anomaly + loss_regular) ** 2)
+        loss_anomaly = torch.abs(self.margin - torch.norm(torch.mean(anomaly_crest, dim=1), p=2, dim=1))  # Txn
+        if len(regular_label) == len(anomaly_label):
+            loss = torch.mean((self.weights[0] * loss_anomaly + self.weights[-1] * loss_regular) ** 2)
+        else:
+            loss = ((self.weights[0] * loss_regular).mean() + (self.weights[-1] * loss_anomaly).mean()) ** 2
+        # loss = (loss_regular + loss_anomaly) ** 2
 
         loss_total = loss_cls + self.alpha * loss
+        # loss_total += calculate_h_score(label.cpu().detach().numpy(), score.cpu().detach().numpy().round())
 
         return loss_total
 
 
 class MacroLoss(nn.Module):
-    def __init__(
-        self,
-    ):
+    def __init__(self, weights=None):
         super(MacroLoss, self).__init__()
 
-        self.loss = nn.BCELoss()
+        self.loss = nn.BCELoss(weight=weights)
 
-    def forward(self, input, label):
+    def forward(self, input, label_r, label_a):
         input = input.squeeze()
-        target = torch.cat((label, label), dim=0).cuda()
+        target = torch.cat((label_r, label_a), dim=0).cuda()
 
         loss = self.loss(input, target)
 
         return loss
 
 
-def do_train(regular_loader, anomaly_loader, model, batch_size, optimizer, device, args):
+def do_train(regular_loader, anomaly_loader, balance, model, batch_size, optimizer, device, args):
     with torch.set_grad_enabled(True):
+        regular_batch_size = batch_size[0]
+        anomaly_batch_size = batch_size[1]
+
         # random_feature_map_dropout = RandomFeatureMapDropout(p=0.5)
         # add_gaussian_noise = AddGaussianNoise(mean=0, std=0.1)
         model.train()
@@ -75,8 +99,8 @@ def do_train(regular_loader, anomaly_loader, model, batch_size, optimizer, devic
         :param regular_video, anomaly_video
             - size: [bs, n=10, t=32, c=2048]
         """
-        regular_video, regular_label, macro_video, macro_label = next(regular_loader)
-        anomaly_video, anomaly_label, macro_video, macro_label = next(anomaly_loader)
+        regular_video, regular_label, macro_r_video, macro_label_r = next(regular_loader)
+        anomaly_video, anomaly_label, macro_a_video, macro_label_a = next(anomaly_loader)
 
         video = torch.cat((regular_video, anomaly_video), 0).to(device)
         # transform
@@ -84,7 +108,7 @@ def do_train(regular_loader, anomaly_loader, model, batch_size, optimizer, devic
         # video = add_gaussian_noise(video)
 
         if args.model_name != "RTFM":
-            macro = torch.cat((macro_video, macro_video), 0).to(device)
+            macro = torch.cat((macro_r_video, macro_a_video), 0).to(device)
 
             outputs = model(video, macro)
             # >> parse outputs
@@ -102,25 +126,33 @@ def do_train(regular_loader, anomaly_loader, model, batch_size, optimizer, devic
             regular_crest = outputs["feature_select_regular"]
             video_scores = outputs["scores"]
 
-        video_scores = video_scores.view(batch_size * 32 * 2, -1)
+        video_scores = video_scores.view(sum(batch_size) * 32, -1)
+        beta = 0.99
+        weight = (1.0 - beta) / (1.0 - torch.pow(beta, torch.tensor(balance)))
+        weights = weight / torch.sum(weight) * len(balance)
+        weights = torch.tensor([weights[0]] * batch_size[0] + [weights[1]] * batch_size[1]).cuda()
+        # weights = torch.tensor([1.0] * batch_size[0] + [batch_size[0] / batch_size[1]] * batch_size[1]).cuda()
+        # weights = torch.tensor(
+        #     [batch_size[1] / sum(batch_size) * 2] * batch_size[0]
+        #     + [batch_size[0] / sum(batch_size) * 2] * batch_size[1]
+        # ).cuda()
+        # weights = torch.tensor([1.0] * batch_size[0] + [1.0] * batch_size[1]).cuda()
 
         video_scores = video_scores.squeeze()
-        abn_scores = video_scores[batch_size * 32 :]
+        abn_scores = video_scores[anomaly_batch_size * 32 :]
 
-        regular_label = regular_label[0:batch_size]
-        anomaly_label = anomaly_label[0:batch_size]
-
-        loss_criterion = RTFM_loss(0.0001, 100)
+        regular_label = regular_label[0:regular_batch_size]
+        anomaly_label = anomaly_label[0:anomaly_batch_size]
+        loss_criterion = RTFM_loss(0.0001, 100, weights)
         loss_magnitude = loss_criterion(
             regular_score, anomaly_score, regular_label, anomaly_label, regular_crest, anomaly_crest
         )
-
-        loss_sparse = sparsity_loss(abn_scores, batch_size, 8e-3)
+        loss_sparse = sparsity_loss(abn_scores, 8e-3)
         loss_smooth = smooth_loss(abn_scores, 8e-4)
 
         if args.model_name != "RTFM":
             macro_criterion = MacroLoss()
-            loss_macro = macro_criterion(macro_scores, macro_label)
+            loss_macro = macro_criterion(macro_scores, macro_label_r, macro_label_a)
 
             cost = loss_magnitude + loss_smooth + loss_sparse + loss_macro
         else:

@@ -115,6 +115,8 @@ def main():
     dictionary = train_regular_set.dictionary
 
     train_regular_idx, val_regular_idx = train_test_split(list(range(len(train_regular_set))), test_size=split_ratio)
+    print(f"train_regular_idx: {len(train_regular_idx)}")
+    print(f"val_regular_idx: {len(val_regular_idx)}")
     train_regular_set_model = Subset(train_regular_set, train_regular_idx)
     train_regular_set_ensemble = Subset(train_regular_set, val_regular_idx)
 
@@ -123,6 +125,8 @@ def main():
     train_anomaly_set = Dataset(**train_anomaly_dataset_cfg, device=device, args=args)
 
     train_anomaly_idx, val_anomaly_idx = train_test_split(list(range(len(train_anomaly_set))), test_size=split_ratio)
+    print(f"train_anomaly_idx: {len(train_anomaly_idx)}")
+    print(f"val_anomaly_idx: {len(val_anomaly_idx)}")
     train_anomaly_set_model = Subset(train_anomaly_set, train_anomaly_idx)
     train_anomaly_set_ensemble = Subset(train_anomaly_set, val_anomaly_idx)
 
@@ -131,12 +135,14 @@ def main():
     test_set = Dataset(**test_dataset_cfg)
 
     # set batch size
-    batch_size_regular = args.batch_size
-    batch_size_anomaly = round(batch_size_regular * (len(train_anomaly_set_model) / len(train_regular_set_model)))
+    args.batch_size = [args.batch_size]
+
+    # args.batch_size.append(round(args.batch_size[0] * (len(train_anomaly_set_model) / len(train_regular_set_model))))
+    args.batch_size.append(args.batch_size[0])
 
     train_regular_loader_m = DataLoader(
         train_regular_set_model,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size[0],
         shuffle=True,
         num_workers=args.workers,
         pin_memory=False,
@@ -154,7 +160,7 @@ def main():
 
     train_anomaly_loader_m = DataLoader(
         train_anomaly_set_model,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size[1],
         shuffle=True,
         num_workers=args.workers,
         pin_memory=False,
@@ -176,13 +182,14 @@ def main():
     print("regular", len(train_regular_set_model), len(train_regular_set_ensemble))
     print("anomaly", len(train_anomaly_set_model), len(train_anomaly_set_ensemble))
     print("test", len(test_set))
+    print("batch_size (regular, anomaly)", args.batch_size[0], args.batch_size[1])
 
     if args.model_name == "mgfn":
-        model = mgfn(batch_size=args.batch_size)
+        model = mgfn(batch_size=args.batch_size[0])
     elif args.model_name == "RF":
         model = RandomForestClassifier(n_estimators=1000, random_state=0, n_jobs=32, verbose=1)
     elif args.model_name == "RTFM":
-        model = RTFM(args.feature_size, args.batch_size)
+        model = RTFM(args.feature_size, args.batch_size[0])
         print(
             """
         load RTFM
@@ -199,7 +206,9 @@ def main():
             print("sklearn.svm.SVC")
         model = SVC(kernel="rbf", probability=True, verbose=3)
     else:
-        model = S3R(args.feature_size, args.batch_size, args.quantize_size, dropout=args.dropout, modality=cfg.modality)
+        model = S3R(
+            args.feature_size, args.batch_size[0], args.quantize_size, dropout=args.dropout, modality=cfg.modality
+        )
 
     # logger.info(train_regular_set.data_info)
     # logger.info(train_anomaly_set.data_info)
@@ -249,7 +258,7 @@ def main():
             if args.inference:
                 score = inference2(test_loader, train_regular_loader_e, train_anomaly_loader_e, model, args, device)
             elif args.model_name != "RF":
-                score = inference(test_loader, model, args, device)
+                score, cm = inference(test_loader, model, args, device)
 
             # >> Performance
             title = [["Dataset", "Method", "Feature", "AUC (%)"]]
@@ -259,12 +268,22 @@ def main():
             for i in range(len(title[0])):
                 table.justify_columns[i] = "center"
             logger.info("Summary Result on {} metric\n{}".format("AUC", table.table))
+            print(cm)
+            import seaborn as sns
+            import matplotlib.pyplot as plt
+
+            sns.heatmap(cm, annot=True, cmap="Blues")
+            plt.savefig("sklearn_confusion_matrix_annot_blues.png")
 
         if args.inference:
             exit()
     else:
         if args.model_name not in ["RF", "SVM"]:
-            score = inference(test_loader, model, args, device)
+            score, cm = inference(test_loader, model, args, device)
+
+    # free Dataset
+    del train_regular_loader_e
+    del train_anomaly_loader_e
 
     if args.model_name not in ["RF", "SVM"]:
         sys_info = """
@@ -346,6 +365,15 @@ def main():
     statistics = []
     if args.debug:
         args.max_epoch = 3
+    print(len(train_regular_loader_m), len(train_anomaly_loader_m))
+
+    # balance = [len(train_regular_set_model), len(train_anomaly_set_model)]
+    balance = [len(train_anomaly_loader_m), len(train_regular_loader_m)]
+    print(balance)
+    beta = 0.99
+    weight = (1.0 - beta) / (1.0 - torch.pow(beta, torch.tensor(balance)))
+    weights = weight / torch.sum(weight) * len(balance)
+    print(weights)
     if args.model_name not in ["RF", "SVM"]:
         for step in range(last_epoch, args.max_epoch + 1):
             if step > 1 and config.lr[step - 1] != config.lr[step - 2]:
@@ -357,17 +385,20 @@ def main():
 
             if (step - 1) % len(train_anomaly_loader_m) == 0:
                 loadera_iter = iter(train_anomaly_loader_m)
+            # if (step - 1) % min(len(train_regular_loader_m), len(train_anomaly_loader_m)) == 0:
+            #     loadern_iter = iter(train_regular_loader_m)
+            #     loadera_iter = iter(train_anomaly_loader_m)
             if args.model_name == "mgfn":
-                loss = trainer(loadern_iter, loadera_iter, model, args.batch_size, optimizer, device)
+                loss = trainer(loadern_iter, loadera_iter, balance, model, args.batch_size[0], optimizer, device)
             else:
-                loss = do_train(loadern_iter, loadera_iter, model, args.batch_size, optimizer, device, args)
+                loss = do_train(loadern_iter, loadera_iter, balance, model, args.batch_size, optimizer, device, args)
 
             condition = (
                 (step % 1 == 0) if args.debug else (step % args.evaluate_freq == 0 and step > args.evaluate_min_step)
             )
 
             if condition:
-                score = inference(test_loader, model, args, device)
+                score, cm = inference(test_loader, model, args, device)
                 test_info["epoch"].append(step)
                 test_info["test_{metric}".format(metric="AUC" if "xd-violence" not in args.dataset else "AP")].append(
                     score

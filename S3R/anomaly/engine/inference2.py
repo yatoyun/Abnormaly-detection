@@ -204,6 +204,7 @@ def print_each_auc(stack_pred, gt):
 def inference(dataloader, er_dataloder, ea_dataloder, s3r, args, device):
     with torch.no_grad():
         pred = torch.zeros(0).to(device)
+        args.batch_size = args.batch_size[0]
 
         gt = dataloader.dataset.ground_truths
         dataset = args.dataset.lower()
